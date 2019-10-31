@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creates infrastructure for the RFID Scanner application. 
+Parameters:
+  UidScanTopic:
+    Type: String
+    Default: scanner/uid-scan
+  UidDataTopic:
+    Type: String
+    Default: scanner/uid-data
+Resources:
+  UidDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: uid
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: uid
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: scanner
+
+  GetUidDataFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: 'exports.handler = async (event) => { console.log(event) };'
+      Environment:
+        Variables:
+          uid_table_name: !Ref UidDataTable
+          uid_topic_name: !Ref UidDataTopic
+      Handler: index.handler
+      Role: !GetAtt GetUidDataFunctionRole.Arn
+      Runtime: nodejs8.10
+      Tags:
+        - Key: Project
+          Value: scanner
+
+  GetUidDataFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+
+  PublishUidDataTopicPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-publish-uid-data-topic-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: iot:Publish
+            Resource: '*'
+          - Effect: Allow
+            Action: iot:DescribeEndpoint
+            Resource: '*'
+      Roles:
+        - !Ref GetUidDataFunctionRole
+
+  GetUidDataDynamoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-get-uid-data-dynamo-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: dynamodb:GetItem
+            Resource: !GetAtt UidDataTable.Arn
+      Roles:
+        - !Ref GetUidDataFunctionRole
+
+  PublishLambdaLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-publish-lambda-logs-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: logs:CreateLogGroup
+            Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+      Roles:
+        - !Ref GetUidDataFunctionRole
+
+  UidScanRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      TopicRulePayload:
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt GetUidDataFunction.Arn
+        RuleDisabled: false
+        Sql: !Sub 'select * from "${UidScanTopic}"'
+
+  GetUidDataFunctionInvocationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      SourceArn: !GetAtt UidScanRule.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      FunctionName: !Ref GetUidDataFunction
+      SourceAccount: !Ref AWS::AccountId
